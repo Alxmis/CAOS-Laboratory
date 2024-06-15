@@ -9,7 +9,7 @@
 template <typename T>
 class BlockingQueue {
 private:
-    std::queue<int> q;
+    std::queue<T> q;
     std::mutex mtx;
     std::condition_variable cv;
     bool done = false;
@@ -89,24 +89,30 @@ public:
 class Producer : public IProducer {
 private:
     int id;
-    int num_items;
     BlockingQueue<int>& queue;
-    std::mt19937 gen;
-    std::uniform_int_distribution<> dis;
     Logger& logger;
+    std::atomic<bool>& stop_flag;
+    int data_size;
 
 public:
-    Producer(int id, int num_items, BlockingQueue<int>& queue, Logger& logger)
-            : id(id), num_items(num_items), queue(queue), gen(std::random_device{}()), dis(1, 100), logger(logger) {}
+    Producer(int id, BlockingQueue<int>& queue, Logger& logger, std::atomic<bool>& stop_flag, int data_size)
+            : id(id), queue(queue), logger(logger), stop_flag(stop_flag), data_size(data_size) {}
 
     void produce() override {
-        for (int i = 0; i < num_items; ++i) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(1, 100);
+
+        int i = 0;
+        while (!stop_flag.load() && i < data_size) {
             std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen) % 100));
             int item = dis(gen);
             queue.push(item);
             std::string log_message = "Producer " + std::to_string(id) + " produced " + std::to_string(item);
             std::cout << log_message << std::endl;
             logger.log(log_message);
+
+            ++i;
         }
 
         queue.set_done();
@@ -124,13 +130,13 @@ private:
 
 public:
     Consumer(int id, BlockingQueue<int>& queue, Logger& logger)
-            : id(id), queue(queue), gen(std::random_device{}()), dis(1, 100), logger(logger) {}
+            : id(id), queue(queue), logger(logger) {}
 
     void consume() override {
         while (true) {
             int item;
             if (queue.pop(item)) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen)));
+                std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen) % 100));
                 std::string log_message = "Consumer " + std::to_string(id) + " consumed " + std::to_string(item);
                 std::cout << log_message << std::endl;
                 logger.log(log_message);
@@ -145,7 +151,7 @@ public:
 int main() {
     const int num_producers = 3;
     const int num_consumers = 3;
-    const int num_items = 10;
+    const int data_size = 50;
 
     BlockingQueue<int> queue;
     Logger logger("log.txt");
@@ -156,8 +162,10 @@ int main() {
     std::vector<std::thread> producer_threads;
     std::vector<std::thread> consumer_threads;
 
+    std::atomic<bool> stop_flag(false);
+
     for (int i = 0; i < num_producers; ++i) {
-        auto producer = std::make_shared<Producer>(i, num_items, queue, logger);
+        auto producer = std::make_shared<Producer>(i, queue, logger, stop_flag, data_size);
         producers.push_back(producer);
         producer_threads.emplace_back(&IProducer::produce, producer);
     }
@@ -171,6 +179,8 @@ int main() {
     for (auto& p : producer_threads) {
         p.join();
     }
+
+    queue.set_done();
 
     for (auto& c : consumer_threads) {
         c.join();
