@@ -5,6 +5,8 @@
 #include <vector>
 #include <memory>
 #include <fstream>
+#include <sys/time.h>
+
 
 template <typename T>
 class BlockingQueue {
@@ -105,11 +107,9 @@ public:
 
         int i = 0;
         while (!stop_flag.load() && i < data_size) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen) % 100));
             int item = dis(gen);
             queue.push(item);
             std::string log_message = "Producer " + std::to_string(id) + " produced " + std::to_string(item);
-            std::cout << log_message << std::endl;
             logger.log(log_message);
 
             ++i;
@@ -138,7 +138,6 @@ public:
             if (queue.pop(item)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(dis(gen) % 100));
                 std::string log_message = "Consumer " + std::to_string(id) + " consumed " + std::to_string(item);
-                std::cout << log_message << std::endl;
                 logger.log(log_message);
             } else {
                 break;
@@ -147,46 +146,69 @@ public:
     }
 };
 
+inline double my_clock(void) {
+    struct timeval t;
+    gettimeofday(&t, NULL);
+    return (1.0e-6*t.tv_usec + t.tv_sec);
+}
+
 
 int main() {
-    const int num_producers = 3;
-    const int num_consumers = 3;
-    const int data_size = 50;
+    for (int DATA_SIZE=1000; DATA_SIZE <= 1000000; DATA_SIZE*=10) {
+        for (int NUM_CONSUMERS = 1; NUM_CONSUMERS < 33; NUM_CONSUMERS *= 2) {
+            double start_time, end_time;
+            start_time = my_clock();
 
-    BlockingQueue<int> queue;
-    Logger logger("log.txt");
+            const int num_producers = 1;
+            const int num_consumers = NUM_CONSUMERS;
+            const int data_size = DATA_SIZE;
 
-    std::vector<std::shared_ptr<IProducer>> producers;
-    std::vector<std::shared_ptr<IConsumer>> consumers;
+            BlockingQueue<int> queue;
+            Logger logger("log.txt");
+            Logger TimeResults("results.txt");
 
-    std::vector<std::thread> producer_threads;
-    std::vector<std::thread> consumer_threads;
+            std::vector<std::shared_ptr<IProducer>> producers;
+            std::vector<std::shared_ptr<IConsumer>> consumers;
 
-    std::atomic<bool> stop_flag(false);
+            std::vector<std::thread> producer_threads;
+            std::vector<std::thread> consumer_threads;
 
-    for (int i = 0; i < num_producers; ++i) {
-        auto producer = std::make_shared<Producer>(i, queue, logger, stop_flag, data_size);
-        producers.push_back(producer);
-        producer_threads.emplace_back(&IProducer::produce, producer);
+            std::atomic<bool> stop_flag(false);
+
+            for (int i = 0; i < num_producers; ++i) {
+                auto producer = std::make_shared<Producer>(i, queue, logger, stop_flag, data_size);
+                producers.push_back(producer);
+                producer_threads.emplace_back(&IProducer::produce, producer);
+            }
+
+            for (int i = 0; i < num_consumers; ++i) {
+                auto consumer = std::make_shared<Consumer>(i, queue, logger);
+                consumers.push_back(consumer);
+                consumer_threads.emplace_back(&IConsumer::consume, consumer);
+            }
+
+            for (auto &p: producer_threads) {
+                p.join();
+            }
+
+            queue.set_done();
+
+            for (auto &c: consumer_threads) {
+                c.join();
+            }
+
+            std::cout << "All tasks are completed." << std::endl;
+
+            end_time = my_clock();
+
+            double dif_seconds = end_time - start_time;
+
+            std::string result_msg = "DATA_SIZE: " + std::to_string(DATA_SIZE) + "; NUM CONSUMERS: " + std::to_string(NUM_CONSUMERS) + "; running time: " +
+                                     std::to_string(dif_seconds);
+
+            TimeResults.log(result_msg);
+
+        }
     }
-
-    for (int i = 0; i < num_consumers; ++i) {
-        auto consumer = std::make_shared<Consumer>(i, queue, logger);
-        consumers.push_back(consumer);
-        consumer_threads.emplace_back(&IConsumer::consume, consumer);
-    }
-
-    for (auto& p : producer_threads) {
-        p.join();
-    }
-
-    queue.set_done();
-
-    for (auto& c : consumer_threads) {
-        c.join();
-    }
-
-    std::cout << "All tasks are completed." << std::endl;
-
     return 0;
 }
